@@ -1,0 +1,1 @@
+sgx-objs += ./src/sgx-kern.o ./src/sgx-epc.o ./src/sgx-utils.o ./src/sgx-crypto.o ./src/sgx-lkm.o
