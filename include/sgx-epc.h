@@ -31,21 +31,23 @@ typedef enum {
 } epc_page_status;
 
 typedef struct {
-	int enclave_id;
+	uint nEID;
 	epc_page_status status;
 } epc_page_info;
 
 extern epc_page *EPC_PAGES;
 extern epc_page_info EPC_PGINFO[NUM_EPCPAGE_TOTAL];
 
-#define INVALID_EPC_INDEX -1
+#define INVALID_EPC_INDEX ((uint)-1)
+#define INVALID_EID ((uint)-1)
+
 
 // exported
 bool init_epc_system(void);
-epc_page* get_epc_pages(int enclave_id, int npages, epc_page_status status);
-void put_epc_pages(int start_index, int npages);
+epc_page* get_epc_pages(uint nEID, uint nPages, epc_page_status status);
+void put_epc_pages(uint start_index, uint nPages);
 void dbg_dump_epc(void);
 int get_epc_page_type(epc_page *epc);
-void* get_epc_page_vaddr(epc_page *epc);
-epc_page* reserve_epc_pages(int enclave_id, int npages);
-void dereserve_epc_pages(epc_page *first_page, int npages);
+ulong get_epc_page_vaddr(epc_page *epc);
+epc_page* reserve_epc_pages(uint nEID, uint nPages);
+void dereserve_epc_pages(epc_page *first_page, uint nPages);

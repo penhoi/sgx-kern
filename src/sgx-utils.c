@@ -1147,12 +1147,12 @@ void *memalign(size_t align, size_t len)
 	}
 
 	if (align <= 4*sizeof(size_t)) {
-		if (!(mem = kmalloc(len, GFP_KERNEL)))
+		if (!(mem = kzalloc(len, GFP_KERNEL)))
 			return NULL;
 		return mem;
 	}
 
-	if (!(mem = kmalloc(len + align-1, GFP_KERNEL)))
+	if (!(mem = kzalloc(len + align-1, GFP_KERNEL)))
 		return NULL;
 
 	new = (void *)(((uintptr_t)mem + align-1) & -align);

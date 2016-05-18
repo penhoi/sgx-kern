@@ -340,7 +340,7 @@ void generate_enclavehash(void *hash, void *code, int code_pages,
 	tmp_secinfo.flags.page_type = PT_REG;
 
 	// Measure tls pages.
-	page = (void *)empty_page;
+	page = (void *)EMPTY_PAGE;
 	int i;
 	for (i = 0; i < tls_npages; i++) {
 		//memset(&current_page, 0, PAGE_SIZE);
@@ -360,7 +360,7 @@ void generate_enclavehash(void *hash, void *code, int code_pages,
 	}
 
 	// Measrue ssa pages.
-	page = (void *)empty_page;
+	page = (void *)EMPTY_PAGE;
 	for (i = 0; i < ssa_npages; i++) {
 		//memset(&current_page, 0, PAGE_SIZE);
 		memcpy(&current_page, &page, sizeof(uintptr_t));
@@ -369,7 +369,7 @@ void generate_enclavehash(void *hash, void *code, int code_pages,
 	}
 
 	// Measure stack pages.
-	page = (void *)empty_page;
+	page = (void *)EMPTY_PAGE;
 	for (i = 0; i < stack_npages; i++) {
 		//memset(&current_page, 0, PAGE_SIZE);
 		memcpy(&current_page, &page, sizeof(uintptr_t));
@@ -378,7 +378,7 @@ void generate_enclavehash(void *hash, void *code, int code_pages,
 	}
 
 	// Measure heap pages.
-	page = (void *)empty_page;
+	page = (void *)EMPTY_PAGE;
 	for (i = 0; i < heap_npages; i++) {
 		//memset(&current_page, 0, PAGE_SIZE);
 		memcpy(&current_page, &page, sizeof(uintptr_t));

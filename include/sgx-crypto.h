@@ -56,4 +56,4 @@ void rsa_sign(rsa_context *ctx, rsa_sig_t sig, unsigned char *bytes, int len);
 void cmac(unsigned char *key, unsigned char *input, size_t bytes, unsigned char *mac);
 
 // linked from sgx-kern
-extern char *empty_page;
+extern uchar *EMPTY_PAGE;

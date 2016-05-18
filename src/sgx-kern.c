@@ -8,24 +8,22 @@
 #include "sgx-epc.h"
 #include "sgx-crypto.h"
 
+bool SGX_INITED = false;
 
 #define NUM_THREADS 1
-
 keid_t ENCLAVES[MAX_ENCLAVES];
-#define INVALID_KEID -1
 
-
-char *empty_page;
-static epc_page *enclave_heap_beg;
-static epc_page *enclave_heap_end;
-static epc_page *enclave_stack_end;
+uchar *EMPTY_PAGE;
+static epc_page *ENCV_HEAP_BGN;
+static epc_page *ENCV_HEAP_END;
+static epc_page *ENCV_STACK_END;
 
 static einittoken_t *app_token;
 
-static void sgx_qemu_init(uint64_t startPage, uint64_t endPage);
+static void sgx_qemu_init(ulong startPage, ulong nPages);
 static void set_cpusvn(uint8_t svn);
-static void set_intel_pubkey(uint64_t pubKey);
-static void set_stack(uint64_t sp);
+static void set_intel_pubkey(ulong pubKey);
+static void set_stack(ulong sp);
 
 void set_app_token(einittoken_t *token)
 {
@@ -35,8 +33,8 @@ void set_app_token(einittoken_t *token)
 // encls() : Execute an encls instruction
 // out_regs store the output value returned from qemu
 	static
-void encls(encls_inst leaf, uint64_t rbx, uint64_t rcx,
-		uint64_t rdx, out_regs_t* out)
+void encls(encls_inst leaf, ulong rbx, ulong rcx,
+		ulong rdx, out_regs_t* out)
 {
 	//(sgx_dbg(kern,
 	//        "leaf=%d, rbx=0x%"PRIx64", rcx=0x%"PRIx64", rdx=0x%"PRIx64")",
@@ -67,20 +65,20 @@ void ECREATE(pageinfo_t *pi, epc_page *page)
 	// RBX: PAGEINFO(In, EA)
 	// RCX: EPCPAGE(In, EA)
 	encls(ENCLS_ECREATE,
-			(uint64_t)pi,
-			(uint64_t)get_epc_page_vaddr(page),
+			(ulong)pi,
+			get_epc_page_vaddr(page),
 			0x0, NULL);
 }
 
 	static
-int EINIT(uint64_t sigstruct, epc_page *secs, uint64_t einittoken)
+int EINIT(ulong sigstruct, epc_page *secs, ulong einittoken)
 {
 	// RBX: SIGSTRUCT(In, EA)
 	// RCX: SECS(In, EA)
 	// RDX: EINITTOKEN(In, EA)
 	// RAX: ERRORCODE(Out)
 	out_regs_t out;
-	encls(ENCLS_EINIT, sigstruct, (uint64_t)get_epc_page_vaddr(secs), einittoken, &out);
+	encls(ENCLS_EINIT, sigstruct, get_epc_page_vaddr(secs), einittoken, &out);
 	return -(int)(out.oeax);
 }
 
@@ -90,16 +88,16 @@ void EADD(pageinfo_t *pi, epc_page *page)
 	// RBX: PAGEINFO(In, EA)
 	// RCX: EPCPAGE(In, EA)
 	encls(ENCLS_EADD,
-			(uint64_t)pi,
-			(uint64_t)get_epc_page_vaddr(page),
+			(ulong)pi,
+			get_epc_page_vaddr(page),
 			0x0, NULL);
 }
 
 	static
-void EEXTEND(uint64_t pageChunk)
+void EEXTEND(secs_t *secs, ulong pageChunk)
 {
 	// RCX: 256B Page Chunk to be hashed(In, EA)
-	encls(ENCLS_EEXTEND, 0x0, pageChunk, 0x0, NULL);
+	encls(ENCLS_EEXTEND, (ulong)secs, pageChunk, 0x0, NULL);
 }
 
 	static
@@ -108,22 +106,22 @@ void EAUG(pageinfo_t *pi, epc_page *page)
 	// RBX: PAGEINFO(In, EA)
 	// RCX: EPCPAGE(In, EA)
 	encls(ENCLS_EAUG,
-			(uint64_t)pi,
-			(uint64_t)get_epc_page_vaddr(page),
+			(ulong)pi,
+			get_epc_page_vaddr(page),
 			0x0, NULL);
 }
 
 	static
-void EMODPR(secinfo_t *si, uint64_t page_addr)
+void EMODPR(secinfo_t *si, ulong page_addr)
 {
 	// RBX: Secinfo Addr(In)
 	// RCX: Destination EPC Addr(In)
 	// EAX: Error Code(out)
 	out_regs_t out;
-	encls(ENCLS_EMODPR, (uint64_t)si, page_addr, 0x0, &out);
+	encls(ENCLS_EMODPR, (ulong)si, page_addr, 0x0, &out);
 }
 
-int EBLOCK(uint64_t page_addr)
+int EBLOCK(ulong page_addr)
 {
 	// RCX: EPC Addr(In, EA)
 	// EAX: Error Code(Out)
@@ -133,49 +131,49 @@ int EBLOCK(uint64_t page_addr)
 	return (int)(out.oeax);
 }
 
-int EWB(pageinfo_t *pi, epc_page *page_addr, uint64_t *VA_slot_addr)
+int EWB(pageinfo_t *pi, epc_page *page_addr, ulong *VA_slot_addr)
 {
 	// EAX: Error(Out)
 	// RBX: Pageinfo Addr(In)
 	// RCX: EPC addr(In)
 	// RDX: VA slot addr(In)
 	out_regs_t out;
-	encls(ENCLS_EWB, (uint64_t)pi, (uint64_t)page_addr, (uint64_t)VA_slot_addr, &out);
+	encls(ENCLS_EWB, (ulong)pi, (ulong)page_addr, (ulong)VA_slot_addr, &out);
 	return (int)(out.oeax);
 }
 
-void EPA(int enclave_id)
+void EPA(int nEID)
 {
 	// RBX: PT_VA (In, Const)
 	// RCX: EPC Addr(In, EA)
-	uint64_t addr = (uint64_t)reserve_epc_pages(enclave_id, 1);
+	ulong addr = (ulong)reserve_epc_pages(nEID, 1);
 	// Assume that we maintain the one Enclave...
-	enclave_id = 0;
+	nEID = 0;
 	encls(ENCLS_EPA, PT_VA, addr, 0, NULL);
 }
 
 	static
-void sgx_qemu_init(uint64_t start_epc_page, uint64_t end_epc_page)
+void sgx_qemu_init(ulong first_epc_page, ulong nPages)
 {
 	// Function just for initializing EPCM within QEMU
 	// based on EPC address in user code
-	encls(ENCLS_OSGX_INIT, start_epc_page, end_epc_page, 0x0, NULL);
+	encls(ENCLS_OSGX_INIT, first_epc_page, nPages, 0x0, NULL);
 }
 
 	static
-void encls_epcm_clear(uint64_t target_epc_page)
+void encls_epcm_clear(ulong target_epc_page)
 {
 	encls(ENCLS_OSGX_EPCM_CLR, target_epc_page, 0x0, 0x0, NULL);
 }
 
 	static
-void encls_stat(int enclave_id, qstat_t *qstat)
+void encls_stat(int nEID, qstat_t *qstat)
 {
-	encls(ENCLS_OSGX_STAT, enclave_id, (uint64_t)qstat, 0x0, NULL);
+	encls(ENCLS_OSGX_STAT, nEID, (ulong)qstat, 0x0, NULL);
 }
 
 	static
-void set_intel_pubkey(uint64_t pubKey)
+void set_intel_pubkey(ulong pubKey)
 {
 	// Function to set CSR_INTELPUBKEYHASH
 	encls(ENCLS_OSGX_PUBKEY, pubKey, 0x0, 0x0, NULL);
@@ -189,7 +187,7 @@ void set_cpusvn(uint8_t svn)
 }
 
 	static
-void set_stack(uint64_t sp)
+void set_stack(ulong sp)
 {
 	// Set enclave stack pointer.
 	encls(ENCLS_OSGX_SET_STACK, sp, 0x0, 0x0, NULL);
@@ -198,7 +196,7 @@ void set_stack(uint64_t sp)
 	static
 int init_enclave(epc_page *secs, sigstruct_t *sig, einittoken_t *token)
 {
-	return EINIT((uint64_t)sig, secs, (uint64_t)token);
+	return EINIT((ulong)sig, secs, (ulong)token);
 }
 
 static
@@ -218,7 +216,7 @@ secinfo_t *alloc_secinfo(bool r, bool w, bool x, epc_page_type pt) {
 }
 
 	static
-secs_t *alloc_secs(uint64_t enclave_addr, uint64_t enclave_size)
+secs_t *alloc_secs(ulong encv_addr, ulong encv_size)
 {
 	const int SECS_SIZE = MIN_ALLOC * PAGE_SIZE;
 	secs_t *secs = (secs_t *)memalign(SECS_SIZE, sizeof(secs_t));
@@ -241,14 +239,14 @@ secs_t *alloc_secs(uint64_t enclave_addr, uint64_t enclave_size)
 		secs->attributes.einittokenkey = false;
 	}
 
-	secs->baseAddr = enclave_addr;
-	secs->size     = enclave_size;
+	secs->baseAddr = encv_addr;
+	secs->size     = encv_size;
 
 	return secs;
 }
 
 	static
-epc_page *ecreate(int enclave_id, uint64_t enclave_addr, uint64_t enclave_size)
+epc_page *ecreate(int nEID, ulong encv_addr, ulong encv_size)
 {
 	pageinfo_t *pi = NULL;
 	secs_t *secs = NULL;
@@ -259,7 +257,7 @@ epc_page *ecreate(int enclave_id, uint64_t enclave_addr, uint64_t enclave_size)
 	if (!pi)
 		printk(KERN_INFO  "failed to allocate pageinfo");
 
-	secs = alloc_secs(enclave_addr, enclave_size);
+	secs = alloc_secs(encv_addr, encv_size);
 	if (!secs)
 		printk(KERN_INFO  "failed to allocate sec");
 
@@ -267,12 +265,12 @@ epc_page *ecreate(int enclave_id, uint64_t enclave_addr, uint64_t enclave_size)
 	if (!si)
 		printk(KERN_INFO  "failed to allocate secinfo");
 
-	pi->srcpge  = (uint64_t)secs;
-	pi->secinfo = (uint64_t)si;
+	pi->srcpge  = (ulong)secs;
+	pi->secinfo = (ulong)si;
 	pi->secs    = 0; // not used
 	pi->linaddr = 0; // not used
 
-	epc = get_epc_pages(enclave_id, 1, EPT_SECS_PAGE);
+	epc = get_epc_pages(nEID, 1, EPT_SECS_PAGE);
 	if (!epc)
 		printk(KERN_INFO  "failed to allocate EPC page for SECS");
 
@@ -291,14 +289,14 @@ epc_page *ecreate(int enclave_id, uint64_t enclave_addr, uint64_t enclave_size)
 }
 
 	static
-void measure_enclave_page(uint64_t page_chunk_addr)
+void measure_enclave_page(secs_t *secs, ulong page_chunk_addr)
 {
-	EEXTEND(page_chunk_addr);
+	EEXTEND(secs, page_chunk_addr);
 }
 
 // add (copy) a single page to a epc page
 	static
-bool _submit_page_to_enclave(void *normal_page, epc_page *page, epc_page *secs, epc_page_type pt)
+bool _add_page_to_enclave(void *normal_page, epc_page *page, epc_page *secs, epc_page_type pt)
 {
 	pageinfo_t *pi = NULL;
 	secinfo_t *si = NULL;
@@ -319,17 +317,17 @@ bool _submit_page_to_enclave(void *normal_page, epc_page *page, epc_page *secs, 
 		//    printk(KERN_INFO  "failed to add executable permission");
 	}
 
-	pi->srcpge  = (uint64_t)normal_page;
-	pi->secinfo = (uint64_t)si;
-	pi->secs    = (uint64_t)get_epc_page_vaddr(secs);
-	pi->linaddr = (uint64_t)get_epc_page_vaddr(page);
+	pi->srcpge  = (ulong)normal_page;
+	pi->secinfo = (ulong)si;
+	pi->secs    = get_epc_page_vaddr(secs);
+	pi->linaddr = get_epc_page_vaddr(page);
 
 
 	EADD(pi, page);
 
 	// for EEXTEND
 	for(i = 0; i < PAGE_SIZE/MEASUREMENT_SIZE; i++)
-		measure_enclave_page((uint64_t)get_epc_page_vaddr(page) + i*MEASUREMENT_SIZE);
+		measure_enclave_page(secs, get_epc_page_vaddr(page) + i*MEASUREMENT_SIZE);
 
 	kfree(pi);
 	kfree(si);
@@ -339,24 +337,24 @@ bool _submit_page_to_enclave(void *normal_page, epc_page *page, epc_page *secs, 
 
 // add multiple pages to epc pages (will be allocated)
 	static
-bool submit_pages_to_enclave(int enclave_id, void *normal_page, int npages,
+bool add_pages_to_enclave(int nEID, void *first_normal_page, int npages,
 		epc_page *secs, epc_page_status status, epc_page_type pt)
 {
 	epc_page *epcpg_iter;
 	void* nrmpg_iter;
 	int i;
 
-	epcpg_iter = get_epc_pages(enclave_id, npages, status);
+	epcpg_iter = get_epc_pages(nEID, npages, status);
 	if (NULL == epcpg_iter)
 		return false;
-
+	nrmpg_iter= first_normal_page;
 	for (i = 0; i < npages; i++) {
-		if (!_submit_page_to_enclave(nrmpg_iter, epcpg_iter, secs, pt)) {
+		if (!_add_page_to_enclave(nrmpg_iter, epcpg_iter, secs, pt)) {
 			printk(KERN_INFO "%s sever error!\n", __FUNCTION__);
 			return false;
 		}
-		nrmpg_iter = (void *)((uintptr_t)nrmpg_iter + PAGE_SIZE);
-		epcpg_iter = (epc_page *)((uintptr_t)epcpg_iter + PAGE_SIZE);		
+		nrmpg_iter = (void *)((uchar*)nrmpg_iter + PAGE_SIZE);
+		epcpg_iter = (epc_page *)((uchar*)epcpg_iter + PAGE_SIZE);		
 	}
 	return true;
 }
@@ -364,29 +362,29 @@ bool submit_pages_to_enclave(int enclave_id, void *normal_page, int npages,
 
 // add multiple empty pages to epc pages (will be allocated)
 	static
-bool submit_empty_pages_to_enclave(int enclave_id, int npages, epc_page *secs,
+bool add_empty_pages_to_enclave(int nEID, int npages, epc_page *secs,
 		epc_page_status status, epc_page_type pt, mem_type mt)
 {
 	epc_page *first_epc, *epc;
 	int i;
 
-	epc = first_epc = get_epc_pages(enclave_id, npages, status);
+	epc = first_epc = get_epc_pages(nEID, npages, status);
 	if (NULL == epc)
 		return false;
 
-	for (i = 0; i < npages; i ++) {
-		if (!_submit_page_to_enclave(empty_page, epc, secs, pt))
+	for (i = 0; i < npages; i++) {
+		if (!_add_page_to_enclave(EMPTY_PAGE, epc, secs, pt))
 			return false;
-		epc = (epc_page *)((uintptr_t)epc + PAGE_SIZE);
+		epc = (epc_page *)((uchar*)epc + PAGE_SIZE);
 	}
 
 	if (mt == MT_HEAP) {
-		enclave_heap_beg = first_epc;
-		enclave_heap_end = (epc_page *)((char *)first_epc + PAGE_SIZE * npages - 1);
+		ENCV_HEAP_BGN = first_epc;
+		ENCV_HEAP_END = (epc_page *)((uchar *)first_epc + PAGE_SIZE * npages - 1);
 	}
 
 	if (mt == MT_STACK) {
-		enclave_stack_end = (epc_page *)((char *)first_epc + PAGE_SIZE * (npages -1));
+		ENCV_STACK_END = (epc_page *)((uchar *)first_epc + PAGE_SIZE * (npages -1));
 	}
 
 	return true;
@@ -404,8 +402,8 @@ bool aug_epc_page_to_enclave(epc_page *page, epc_page *secs)
 
 	pi->srcpge  = 0;
 	pi->secinfo = 0;
-	pi->secs    = (uint64_t)secs;
-	pi->linaddr = (uint64_t)get_epc_page_vaddr(page);
+	pi->secs    = (ulong)secs;
+	pi->linaddr = get_epc_page_vaddr(page);
 
 	EAUG(pi, page);
 
@@ -420,9 +418,12 @@ bool sys_sgx_init(void)
 	// enclave map
 	int i;
 
+	if (SGX_INITED)
+		return true;
+	
 	memset(ENCLAVES, 0, sizeof(keid_t) * MAX_ENCLAVES);
 	for (i = 0; i < MAX_ENCLAVES; i ++) {
-		ENCLAVES[i].nEID = -1;
+		ENCLAVES[i].nEID = INVALID_EID;
 	}
 
 	if (!init_epc_system()) {
@@ -431,29 +432,29 @@ bool sys_sgx_init(void)
 	}
 
 	// QEMU Setup initialization for SGX
-	sgx_qemu_init((uint64_t)&EPC_PAGES[0], (uint64_t)&EPC_PAGES[NUM_EPCPAGE_TOTAL]);
+	sgx_qemu_init((ulong)EPC_PAGES, NUM_EPCPAGE_TOTAL);
 
 	// Set default cpu svn
 	set_cpusvn(CPU_SVN);
 
 	// Initialize an empty page for later use.
-	empty_page = memalign(PAGE_SIZE, PAGE_SIZE);
-
+	EMPTY_PAGE = memalign(PAGE_SIZE, PAGE_SIZE);
+	SGX_INITED = true;
 	return true;
 }
 
-// allocate enclave_id
+// allocate nEID
 	static
-int alloc_enclave_id(void)
+uint alloc_enclave_ID(void)
 {
 	int i;
 	for (i = 0; i < MAX_ENCLAVES; i ++) {
-		if (ENCLAVES[i].nEID == INVALID_KEID) {
+		if (ENCLAVES[i].nEID == INVALID_EID) {
 			ENCLAVES[i].nEID = i;
 			return i;
 		}
 	}
-	return INVALID_KEID;
+	return INVALID_EID;
 }
 
 // TODO. 1. param entry should be deleted
@@ -483,35 +484,35 @@ int sys_create_enclave(void *base, unsigned int code_pages,
 	int ssa_page_offset;
 
 	epc_page *enclave = NULL;	
-	void *enclave_addr = NULL;
-	int enclave_size = PAGE_SIZE * total_npages;
+	long encv_addr = 0;
+	int encv_size = PAGE_SIZE * total_npages;
 
 	epc_page *secs = NULL;
 	epc_page *tcs_epc = NULL;
-	int eid = INVALID_KEID;
+	uint nEID = INVALID_EID;
 	int ret = -1;
 
-	eid = alloc_enclave_id();
-	if (INVALID_KEID == eid)
+	nEID = alloc_enclave_ID();
+	if (INVALID_EID == nEID)
 		goto err;
 
-	ENCLAVES[eid].nEID = eid;
-	ENCLAVES[eid].kin_n++;
+	ENCLAVES[nEID].nEID = nEID;
+	ENCLAVES[nEID].kin_n++;
 
-	enclave = reserve_epc_pages(eid, total_npages);
+	enclave = reserve_epc_pages(nEID, total_npages);
 	if (NULL == enclave)
 		goto err;
 	else
-		enclave_addr = get_epc_page_vaddr(enclave);
+		encv_addr = get_epc_page_vaddr(enclave);
 
 	// allocate secs
-	secs = ecreate(eid, (uint64_t)enclave_addr, enclave_size);
+	secs = ecreate(nEID, encv_addr, encv_size);
 	if (!secs)
 		goto err;
-	ENCLAVES[eid].secs = secs;
+	ENCLAVES[nEID].secs = secs;
 
 	// get epc for TCS
-	tcs_epc = get_epc_pages(eid, 1, EPT_TCS_PAGE);
+	tcs_epc = get_epc_pages(nEID, 1, EPT_TCS_PAGE);
 	if (!tcs_epc)
 		goto err;
 
@@ -519,100 +520,100 @@ int sys_create_enclave(void *base, unsigned int code_pages,
 	ssa_page_offset = sec_npages + tcs_npages + tls_npages + code_pages;
 	update_tcs_fields(tcs, tls_page_offset, ssa_page_offset);
 
-	if (!submit_pages_to_enclave(eid, tcs, 1, secs, EPT_TCS_PAGE, PT_TCS))
+	if (!_add_page_to_enclave(tcs, tcs_epc, secs, PT_TCS))
 		goto err;
 
 	// allocate TLS pages
-	if (!submit_empty_pages_to_enclave(eid, tls_npages, secs, EPT_REG_PAGE, PT_REG, MT_TLS))
+	if (!add_empty_pages_to_enclave(nEID, tls_npages, secs, EPT_REG_PAGE, PT_REG, MT_TLS))
 		printk(KERN_INFO  "failed to add pages");
 
 	// allocate code pages
-	if (!submit_pages_to_enclave(eid, base, code_pages, secs, EPT_REG_PAGE, PT_REG))
+	if (!add_pages_to_enclave(nEID, base, code_pages, secs, EPT_REG_PAGE, PT_REG))
 		printk(KERN_INFO  "failed to add pages");
 
 	// allocate SSA pages
-	if (!submit_empty_pages_to_enclave(eid, ssa_npages, secs, EPT_REG_PAGE, PT_REG, MT_SSA))
+	if (!add_empty_pages_to_enclave(nEID, ssa_npages, secs, EPT_REG_PAGE, PT_REG, MT_SSA))
 		printk(KERN_INFO  "failed to add pages");
-	ENCLAVES[eid].prealloc_ssa = ssa_npages * PAGE_SIZE;
+	ENCLAVES[nEID].prealloc_ssa = ssa_npages * PAGE_SIZE;
 
 	// allocate stack pages
-	if (!submit_empty_pages_to_enclave(eid, stack_npages, secs, EPT_REG_PAGE, PT_REG, MT_STACK))
+	if (!add_empty_pages_to_enclave(nEID, stack_npages, secs, EPT_REG_PAGE, PT_REG, MT_STACK))
 		printk(KERN_INFO  "failed to add pages");
-	ENCLAVES[eid].prealloc_stack = stack_npages * PAGE_SIZE;
+	ENCLAVES[nEID].prealloc_stack = stack_npages * PAGE_SIZE;
 
 	// allocate heap pages
 	//(sgx_dbg(info, "add heap pages: %p (%d pages)",
-	//        empty_page, heap_npages);
-	if (!submit_empty_pages_to_enclave(eid, heap_npages, secs, EPT_REG_PAGE, PT_REG, MT_HEAP))
+	//        EMPTY_PAGE, heap_npages);
+	if (!add_empty_pages_to_enclave(nEID, heap_npages, secs, EPT_REG_PAGE, PT_REG, MT_HEAP))
 		printk(KERN_INFO  "failed to add pages");
-	ENCLAVES[eid].prealloc_heap = heap_npages * PAGE_SIZE;
+	ENCLAVES[nEID].prealloc_heap = heap_npages * PAGE_SIZE;
 
 	// Stack enclave stack pointer.
-	set_stack((uint64_t)enclave_stack_end);
+	set_stack((ulong)ENCV_STACK_END);
 
 	if (init_enclave(secs, sig, token))
 		goto err;
 
 	// commit
-	ret = eid;
+	ret = nEID;
 
 	// update per-enclave info
-	ENCLAVES[eid].tcs = get_epc_page_vaddr(tcs_epc);
-	ENCLAVES[eid].enclave = (uint64_t)enclave;
+	ENCLAVES[nEID].tcs = get_epc_page_vaddr(tcs_epc);
+	ENCLAVES[nEID].enclave = (ulong)enclave;
 
-	ENCLAVES[eid].kout_n++;
+	ENCLAVES[nEID].kout_n++;
 	return ret;
 err:
 	dereserve_epc_pages(enclave, total_npages);
-	ENCLAVES[eid].kout_n++;
+	ENCLAVES[nEID].kout_n++;
 	return ret;
 }
 
 
-int sys_stat_enclave(int enclave_id, keid_t *stat)
+int sys_stat_enclave(int nEID, keid_t *stat)
 {
-	if (enclave_id < 0 || enclave_id >= MAX_ENCLAVES) {
+	if (nEID < 0 || nEID >= MAX_ENCLAVES) {
 		return -1;
 	}
-	//*stat = ENCLAVES[enclave_id];
+	//*stat = ENCLAVES[nEID];
 	if (stat == NULL) {
 		return -1;
 	}
 
-	ENCLAVES[enclave_id].kin_n++;
-	encls_stat(enclave_id, &(ENCLAVES[enclave_id].qstat));
-	ENCLAVES[enclave_id].kout_n++;
-	memcpy(stat, &(ENCLAVES[enclave_id]), sizeof(keid_t));
+	ENCLAVES[nEID].kin_n++;
+	encls_stat(nEID, &(ENCLAVES[nEID].qstat));
+	ENCLAVES[nEID].kout_n++;
+	memcpy(stat, &(ENCLAVES[nEID]), sizeof(keid_t));
 
 	return 0;
 }
 
-unsigned long sys_add_epc(int enclave_id)
+unsigned long sys_add_epc(int nEID)
 {
 	epc_page *free_epc_page = NULL;
 	epc_page *secs = NULL;
 	epc_page *epc = NULL;
 
-	if (enclave_id < 0 || enclave_id >= MAX_ENCLAVES)
+	if (nEID < 0 || nEID >= MAX_ENCLAVES)
 		return -1;
 
-	ENCLAVES[enclave_id].kin_n++;
-	free_epc_page = reserve_epc_pages(enclave_id, 1);
+	ENCLAVES[nEID].kin_n++;
+	free_epc_page = reserve_epc_pages(nEID, 1);
 
 	if (free_epc_page == NULL)
 		goto err;
 
-	secs = ENCLAVES[enclave_id].secs;
-	epc = get_epc_pages(enclave_id, 1, (uint64_t)EPT_REG_PAGE);
+	secs = ENCLAVES[nEID].secs;
+	epc = get_epc_pages(nEID, 1, (ulong)EPT_REG_PAGE);
 	if (!epc)
 		goto err;
 
 	if (!aug_epc_page_to_enclave(epc, secs))
 		goto err;
 
-	ENCLAVES[enclave_id].augged_heap += PAGE_SIZE;
+	ENCLAVES[nEID].augged_heap += PAGE_SIZE;
 
 err:
-	ENCLAVES[enclave_id].kout_n++;
+	ENCLAVES[nEID].kout_n++;
 	return (unsigned long)epc;
 }

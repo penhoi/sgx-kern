@@ -39,27 +39,35 @@ bool _alloc_epc_memory(void)
 void _free_epc_memory(void)
 {
 	if (NULL != EPC_PAGES)
-		free_pages((unsigned long)EPC_PAGES, NUM_EPCPAGE_ORDER);
+		free_pages((ulong)EPC_PAGES, NUM_EPCPAGE_ORDER);
 	EPC_PAGES = NULL;
 }
 
 
 bool init_epc_system(void) 
 {
-	return _alloc_epc_memory();
+	uint i;
+	if (!_alloc_epc_memory())
+		return false;
+
+	//Initalize epc_page_info
+	for (i = 0; i < NUM_EPCPAGE_TOTAL; i++) {
+		EPC_PGINFO[i].status = EPT_FREE_PAGE;
+	}
+	return true;
 }
 
 // linear address is in fact just addr of epc page (physical page)
 inline
-void* get_epc_page_vaddr(epc_page *epc) {
-	return epc;
+ulong get_epc_page_vaddr(epc_page *epc) {
+	return (ulong)epc;
 }
 
 int get_epc_page_type(epc_page *epc)
 {
-	int i;
+	uint i;
 
-	i = ((unsigned long)epc - (unsigned long)EPC_PAGES) / 
+	i = ((ulong)epc - (ulong)EPC_PAGES) / 
 		sizeof(epc_page);
 	if (i < 0 || i>= NUM_EPCPAGE_TOTAL){
 		printk(KERN_INFO "%s: out of index\n", __FUNCTION__);
@@ -69,15 +77,15 @@ int get_epc_page_type(epc_page *epc)
 		return EPC_PGINFO[i].status;
 }
 
-epc_page * get_epc_pages(int enclave_id, int npages, epc_page_status status)
+epc_page * get_epc_pages(uint nEID, uint nPages, epc_page_status status)
 {
-	static int last = 0;
-	int idx, cnt, i;
-	int first = 0;
+	static uint last = 0;
+	uint idx, cnt, i;
+	uint first = 0;
 
-	for (i = 0, cnt = 0; (i < NUM_EPCPAGE_TOTAL) && (cnt < npages); i++) {
+	for (i = 0, cnt = 0; (i < NUM_EPCPAGE_TOTAL) && (cnt < nPages); i++) {
 		idx = (i + last) % NUM_EPCPAGE_TOTAL;
-		if (EPC_PGINFO[idx].enclave_id == enclave_id && 
+		if (EPC_PGINFO[idx].nEID == nEID && 
 				EPC_PGINFO[idx].status == EPT_RESERVED) {
 			EPC_PGINFO[idx].status = status;
 			if (cnt == 0)
@@ -85,7 +93,8 @@ epc_page * get_epc_pages(int enclave_id, int npages, epc_page_status status)
 			cnt ++;
 		}
 	}
-	if (cnt == npages)
+	last = idx;
+	if (cnt == nPages)
 		return &EPC_PAGES[first];
 	else {
 		if (first != 0)
@@ -94,16 +103,16 @@ epc_page * get_epc_pages(int enclave_id, int npages, epc_page_status status)
 	}
 }
 
-void put_epc_pages(int start_index, int npages)
+void put_epc_pages(uint start_index, uint nPages)
 {
-	int i;
+	uint i;
 
-	if (start_index < 0 || start_index + npages >= NUM_EPCPAGE_TOTAL) {
+	if (start_index < 0 || start_index + nPages >= NUM_EPCPAGE_TOTAL) {
 		printk(KERN_INFO "out of index\n");
 		return;
 	}
 
-	for (i = start_index; i < npages; i++) {
+	for (i = start_index; i < nPages; i++) {
 		EPC_PGINFO[i].status = EPT_FREE_PAGE;
 	}
 }
@@ -123,85 +132,85 @@ const char *_epc_bitmap_to_str(epc_page_status type)
 
 void dbg_dump_epc(void)
 {
-	int i;
+	uint i;
 	for (i = 0; i < NUM_EPCPAGE_TOTAL; i++) {
 		printk(KERN_INFO  "[%02d] %p (%02d/%s)\n",
 				i, EPC_PAGES[i],
-				EPC_PGINFO[i].enclave_id,
+				EPC_PGINFO[i].nEID,
 				_epc_bitmap_to_str(EPC_PGINFO[i].status));
 	}
 	printk(KERN_INFO  "\n");
 }
 
-epc_page* reserve_epc_pages(int enclave_id, int npages)
+epc_page* reserve_epc_pages(uint nEID, uint nPages)
 {
-	static int last = 0;
-	int	beg = INVALID_EPC_INDEX;
-	int idx, i;
+	static uint last = 0;
+	uint	bgn = INVALID_EPC_INDEX;
+	uint idx, i;
 
 	//find the first epc page
 	for (i = 0; i < NUM_EPCPAGE_TOTAL; i++) {
 		idx = (i + last) % NUM_EPCPAGE_TOTAL;
 		if (EPC_PGINFO[idx].status == EPT_FREE_PAGE) {
-			EPC_PGINFO[idx].enclave_id = enclave_id;
+			EPC_PGINFO[idx].nEID = nEID;
 			EPC_PGINFO[idx].status = EPT_RESERVED;
-			last = idx + 1;
 			break;
 		}
 	}
+	last = idx;
 	if (i == NUM_EPCPAGE_TOTAL)
 		return NULL;
 
-	//meets the requirement of npages
-	beg = idx;
-	if (1 == npages)
+	//meets the requirement of nPages
+	bgn = idx;
+	if (1 == nPages)
 		goto success;	
 	// request too many pages
-	else if (beg + npages >= NUM_EPCPAGE_TOTAL) {
-		put_epc_pages(beg, 1);
+	else if (bgn + nPages >= NUM_EPCPAGE_TOTAL) {
+		put_epc_pages(bgn, 1);
 		return NULL;
 	}
 
-	// check if we have npages
-	for (i = beg + 1; i < beg + npages; i++) {
+	// check if we have nPages
+	for (i = bgn + 1; i < bgn + nPages; i++) {
 		if (EPC_PGINFO[i].status != EPT_FREE_PAGE) {
 			// restore and return
-			put_epc_pages(beg, i-beg);
+			put_epc_pages(bgn, i-bgn);
 			return NULL;
 		}
-		EPC_PGINFO[i].enclave_id = enclave_id;
+		EPC_PGINFO[i].nEID = nEID;
 		EPC_PGINFO[i].status = EPT_RESERVED;
 	}
 	//update the last variable
 	last = i;
 
 success:
-	// npages epcs allocated
-	return &EPC_PAGES[beg];
+	// nPages epcs allocated
+	return &EPC_PAGES[bgn] ;
 
 }
 
-void dereserve_epc_pages(epc_page *first_epc, int npages)
+void dereserve_epc_pages(epc_page *first_page, uint nPages)
 {
-	int beg, enclave_id, cnt, i;
+	uint bgn, cnt, i;
+	uint nEID;
 
-	beg = ((unsigned long)first_epc - (unsigned long)EPC_PAGES) / 
-		sizeof(epc_page);
-	if (beg < 0 || beg + npages >= NUM_EPCPAGE_TOTAL){
+	bgn = ((ulong)first_page - (ulong)EPC_PAGES) / sizeof(epc_page);
+	if (bgn < 0 || bgn + nPages >= NUM_EPCPAGE_TOTAL){
 		printk(KERN_INFO "%s: out of index\n", __FUNCTION__);
 		return;
 	}
 
-	enclave_id = EPC_PGINFO[beg].enclave_id;
+	nEID = EPC_PGINFO[bgn].nEID;
 	cnt = 0;	
-	for (i = beg; (i < NUM_EPCPAGE_TOTAL) && (cnt < npages); i++) {
-		if (EPC_PGINFO[i].enclave_id == enclave_id && EPC_PGINFO[i].status == EPT_RESERVED) {
-			EPC_PGINFO[i].enclave_id = 0;
+	for (i = bgn; (i < NUM_EPCPAGE_TOTAL) && (cnt < nPages); i++) {
+		if (EPC_PGINFO[i].nEID == nEID && EPC_PGINFO[i].status == EPT_RESERVED) {
+			EPC_PGINFO[i].nEID = INVALID_EID;
 			EPC_PGINFO[i].status = EPT_FREE_PAGE;
 			cnt++;
 		}
 	}
-	if (cnt != npages) {
+	if (cnt != nPages) {
 		printk(KERN_INFO "%s: no so many pages to dereserve!\n", __FUNCTION__);
 	}
 }

@@ -42,12 +42,12 @@ typedef unsigned char uchar;
 #define CPU_SVN                  1
 #define MEASUREMENT_SIZE         256
 #define NUM_EPCPAGE_ORDER        10
-#define NUM_EPCPAGE_TOTAL        (2^NUM_EPCPAGE_ORDER)
+#define NUM_EPCPAGE_TOTAL        1024 //(2.^NUM_EPCPAGE_ORDER)
 #define MIN_ALLOC                2
 
 // Enclave configuration
-#define STACK_PAGE_FRAMES_PER_THREAD 250
-#define HEAP_PAGE_FRAMES             300
+#define STACK_PAGE_FRAMES_PER_THREAD 10 //200
+#define HEAP_PAGE_FRAMES             20 //250
 
 // For ALIGNMENT
 #define EINITTOKEN_ALIGN_SIZE    (512)
@@ -205,7 +205,9 @@ typedef struct {
 } out_regs_t;
 
 // SGX Data structures
-typedef uchar epc_page[PAGE_SIZE];
+typedef struct {
+	uchar x[PAGE_SIZE];
+}epc_page;
 
 typedef struct {
    uint64_t linaddr;
@@ -424,7 +426,7 @@ typedef struct {
 } qstat_t;
 
 typedef struct {
-    int nEID;
+    uint nEID;
     uint64_t enclave;
     tcs_t *tcs;
     epc_page *secs;
