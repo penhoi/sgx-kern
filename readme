@@ -1,0 +1,16 @@
+/*
+In a real system, each epcm entry is exclusively mapped to an EPC page, i.e. remembering the physical address of its corresponding EPC page. At runtime, CPU automatically checks the accessiblity of EPC pages in address translation phase by examing the EPCM entries.
+
+However, in our system we  should check the accessiblity of EPC pages in a software fashion. It involves complicated gva->gpa->hva trasforms. 
+
+EPC pages are virtual address,
+and each EPC page can be double mapped to applications (or kernel) to create enclaves.
+
+
+However, 
+/* 
+So, the EPC_BGNADDR and EPC_ENDADDR should be physica addressess.
+*/
+
+
+*/
